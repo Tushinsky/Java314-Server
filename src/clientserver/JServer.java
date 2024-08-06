@@ -1,26 +1,31 @@
 package clientserver;
 
 
-import connection.JDBCConnection;
+import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import connection.JDBCConnection;
 
 public class JServer extends Thread  {
-    private static final int PORT = 5555;// номер порта, который будет прослушивать сервер
+    private static final int PORT = 8189;// номер порта, который будет прослушивать сервер
     // шаблоны сообщений сервера
     private final String MSG = "Клиент '%d' отправил мне сообщение:\n\r";
     private final String CONN_MESSAGE = "Клиент '%d' закрыл соединение";
     private Socket socket;// канал для связи сервера и клиента (или приложений)
     private int num;// номер клиента
-    private JDBCConnection connect;
+    private static JDBCConnection connect;
     private boolean connOpen = false;
     private String hostIP;// IP адрес сервера базы данных
     private String serverPort;// порт сервера базы данных
@@ -32,7 +37,7 @@ public class JServer extends Thread  {
         this.num = num;
         this.socket = socket;
 
-        start();// запуска канала сервера (запуск потока)
+        start();// запуск канала сервера (запуск потока)
     }
 
     @Override
@@ -41,7 +46,10 @@ public class JServer extends Thread  {
             // входной и выходной потоки данных
             DataInputStream dis = new DataInputStream(socket.getInputStream());
             DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
-
+            
+            // поток для чтения вводимых данных с клавиатуры
+//            InputStreamReader isr = new InputStreamReader(System.in);
+//            BufferedReader keyBoard = new BufferedReader(isr);
             String line;
             while(true) {
                 // читаем данные пока канал не будет закрыт
@@ -50,7 +58,7 @@ public class JServer extends Thread  {
                 System.out.printf(MSG, num);
                 System.out.println(line);
                 if(line.startsWith("connect:")) {
-                    // если передаётся строка соединения с базой данных, проверяем
+                    // если передаётся запрос на соединение с базой данных, проверяем
                     // открывалось ли оно
                     connectToBataBase(dos, line);
                 } else if(line.equalsIgnoreCase("no")) {
@@ -67,18 +75,24 @@ public class JServer extends Thread  {
                     System.out.printf(CONN_MESSAGE, num);
                     System.out.println();
                     break;
+                } else {
+                    // поступает запрос на получение данных
+                    dos.writeUTF(line);
+                    dos.flush();// очищаем поток и выводим все данные
+                    System.out.println();
                 }
+                
             }
-            
-            System.exit(0);// заканчиваем работу
+            System.exit(0);
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            System.out.println("exception: " + e.getMessage());
+            System.exit(0);
         } catch (SQLException | ClassNotFoundException ex) {
             Logger.getLogger(JServer.class.getName()).log(Level.SEVERE, null, ex);
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws FileNotFoundException, SQLException, ClassNotFoundException {
         ServerSocket srvSocket = null;// создаём канал сервера
         int i = 0;// начальное занчение счётчика клиентов
         try {
@@ -86,13 +100,14 @@ public class JServer extends Thread  {
                 // получаем IP адрес локальгого компьютера (если сервер расположен на локальной машине)
                 InetAddress ia = InetAddress.getByName("localhost");
                 srvSocket = new ServerSocket(PORT, 0, ia);// создаём канал
-                System.out.println("Сервер запущен");
+                System.out.println("Ready");// сокет готов
                 // запускается бесконечный цикл ожидания подключения клиентов
                 while (true) {
                     Socket socket = srvSocket.accept();// создаём канал для принятия данных
                     System.err.println("\n\nКлиент принят");
                     new JServer().setSocket(i++, socket);// создание нашего класса - сервера
                 }
+                
             } catch (IOException ex) {
                 System.out.println("Исключение: " + ex);
             }
@@ -125,9 +140,11 @@ public class JServer extends Thread  {
             String driver = "org.firebirdsql.jdbc.FBDriver";
             String url = "jdbc:firebirdsql://" + hostIP + ":" +
                 serverPort + "/" + databaseName;
+            System.out.println("url=" + url);
             // создаём соединение, проверяем его сосотяние
             connect = new JDBCConnection(driver, url, userName, password);
-            return connect.isClosedConn() != true;
+            System.out.println("connect=" + connect.isClosedConn());
+            return !connect.isClosedConn();
         } catch (SQLException ex){
             return false;
         }
@@ -141,6 +158,7 @@ public class JServer extends Thread  {
         if(connOpen == false) {
             // если соединение на открывалось, разбираем строку на составляющие
             String[] str = line.substring(8).split(";");
+            System.out.println("str:" + Arrays.toString(str));
             // для установки соединения нужен массив из 5 элементов
             if(str.length < 5) {
                 // вывод информации в поток данных
@@ -159,7 +177,7 @@ public class JServer extends Thread  {
                 connOpen = openConnection();
             }
         }
-        if(connOpen) {
+        if(connOpen == true) {
             dos.writeUTF("Соединение установлено! Введите запрос на получение данных:");
             dos.flush();// очищаем поток и выводим все данные
             System.out.println();
