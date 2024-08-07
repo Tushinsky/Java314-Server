@@ -1,31 +1,29 @@
 package clientserver;
 
 
-import java.io.BufferedReader;
+import connection.JDBCConnection;
+import connection.Runquery;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.ObjectOutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
-import java.util.Arrays;
+import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import connection.JDBCConnection;
 
 public class JServer extends Thread  {
-    private static final int PORT = 8189;// номер порта, который будет прослушивать сервер
+    private static final int PORT = 8192;// номер порта, который будет прослушивать сервер
     // шаблоны сообщений сервера
     private final String MSG = "Клиент '%d' отправил мне сообщение:\n\r";
     private final String CONN_MESSAGE = "Клиент '%d' закрыл соединение";
     private Socket socket;// канал для связи сервера и клиента (или приложений)
     private int num;// номер клиента
-    private static JDBCConnection connect;
+    private JDBCConnection connect;
     private boolean connOpen = false;
     private String hostIP;// IP адрес сервера базы данных
     private String serverPort;// порт сервера базы данных
@@ -37,7 +35,7 @@ public class JServer extends Thread  {
         this.num = num;
         this.socket = socket;
 
-        start();// запуск канала сервера (запуск потока)
+        start();// запуска канала сервера (запуск потока)
     }
 
     @Override
@@ -46,10 +44,7 @@ public class JServer extends Thread  {
             // входной и выходной потоки данных
             DataInputStream dis = new DataInputStream(socket.getInputStream());
             DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
-            
-            // поток для чтения вводимых данных с клавиатуры
-//            InputStreamReader isr = new InputStreamReader(System.in);
-//            BufferedReader keyBoard = new BufferedReader(isr);
+
             String line;
             while(true) {
                 // читаем данные пока канал не будет закрыт
@@ -58,7 +53,7 @@ public class JServer extends Thread  {
                 System.out.printf(MSG, num);
                 System.out.println(line);
                 if(line.startsWith("connect:")) {
-                    // если передаётся запрос на соединение с базой данных, проверяем
+                    // если передаётся строка соединения с базой данных, проверяем
                     // открывалось ли оно
                     connectToBataBase(dos, line);
                 } else if(line.equalsIgnoreCase("no")) {
@@ -66,33 +61,34 @@ public class JServer extends Thread  {
                     closeConnection(dos);
                 } else if(line.equalsIgnoreCase("quit")) {
                     // если введено QUIT, закрываем канал и выходим из цикла
-                    // вывод информации в поток данных
-                    dos.writeUTF(line);
-                    dos.flush();// очищаем поток и выводим все данные
-                    System.out.println();
-                    closeConnection(dos);
-                    socket.close();
-                    System.out.printf(CONN_MESSAGE, num);
-                    System.out.println();
+                    quitSocket(dos, line);
                     break;
                 } else {
-                    // поступает запрос на получение данных
-                    dos.writeUTF(line);
-                    dos.flush();// очищаем поток и выводим все данные
-                    System.out.println();
+                    // если клиент посылает запрос на получение/изменение данных
+                    // запрос должен начинаться с ключевого слова SQL:
+                    if(line.startsWith("sql:")) {
+                        // выведем сообщение
+                        System.out.printf(MSG, num);
+                        System.out.println();
+                        outPutObjectData(line);
+                        // отправим его обратно пользователю
+                        outPutData(dos, line);
+                    } else {
+                        // отправим его обратно пользователю
+                        outPutData(dos, line);
+                    }
                 }
-                
             }
-            System.exit(0);
+            
+            System.exit(0);// заканчиваем работу
         } catch (IOException e) {
-            System.out.println("exception: " + e.getMessage());
-            System.exit(0);
+            throw new RuntimeException(e);
         } catch (SQLException | ClassNotFoundException ex) {
             Logger.getLogger(JServer.class.getName()).log(Level.SEVERE, null, ex);
         }
     }
 
-    public static void main(String[] args) throws FileNotFoundException, SQLException, ClassNotFoundException {
+    public static void main(String[] args) {
         ServerSocket srvSocket = null;// создаём канал сервера
         int i = 0;// начальное занчение счётчика клиентов
         try {
@@ -100,14 +96,13 @@ public class JServer extends Thread  {
                 // получаем IP адрес локальгого компьютера (если сервер расположен на локальной машине)
                 InetAddress ia = InetAddress.getByName("localhost");
                 srvSocket = new ServerSocket(PORT, 0, ia);// создаём канал
-                System.out.println("Ready");// сокет готов
+                System.out.println("Сервер запущен");
                 // запускается бесконечный цикл ожидания подключения клиентов
                 while (true) {
                     Socket socket = srvSocket.accept();// создаём канал для принятия данных
                     System.err.println("\n\nКлиент принят");
                     new JServer().setSocket(i++, socket);// создание нашего класса - сервера
                 }
-                
             } catch (IOException ex) {
                 System.out.println("Исключение: " + ex);
             }
@@ -140,11 +135,9 @@ public class JServer extends Thread  {
             String driver = "org.firebirdsql.jdbc.FBDriver";
             String url = "jdbc:firebirdsql://" + hostIP + ":" +
                 serverPort + "/" + databaseName;
-            System.out.println("url=" + url);
             // создаём соединение, проверяем его сосотяние
             connect = new JDBCConnection(driver, url, userName, password);
-            System.out.println("connect=" + connect.isClosedConn());
-            return !connect.isClosedConn();
+            return connect.isClosedConn() != true;
         } catch (SQLException ex){
             return false;
         }
@@ -156,16 +149,14 @@ public class JServer extends Thread  {
             IOException, FileNotFoundException, SQLException,
             ClassNotFoundException {
         if(connOpen == false) {
+            System.out.println("Устанавливаем соединение с базой данных...");
             // если соединение на открывалось, разбираем строку на составляющие
             String[] str = line.substring(8).split(";");
-            System.out.println("str:" + Arrays.toString(str));
             // для установки соединения нужен массив из 5 элементов
             if(str.length < 5) {
                 // вывод информации в поток данных
-                dos.writeUTF("Не хватает данных для установки соединения!");
-                dos.flush();// очищаем поток и выводим все данные
-                System.out.println();
-
+                outPutData(dos, "Не хватает данных для установки соединения!");
+                
             } else {
                 // получаем параметры соединения
                 hostIP = str[0];
@@ -177,10 +168,10 @@ public class JServer extends Thread  {
                 connOpen = openConnection();
             }
         }
-        if(connOpen == true) {
-            dos.writeUTF("Соединение установлено! Введите запрос на получение данных:");
-            dos.flush();// очищаем поток и выводим все данные
-            System.out.println();
+        if(connOpen) {
+            System.out.println("Соединение установлено");
+            outPutData(dos, "Соединение установлено! Введите запрос на получение данных:");
+            
         }
     }
     
@@ -194,12 +185,84 @@ public class JServer extends Thread  {
                 }
             }
             // вывод информации в поток данных
-            dos.writeUTF("Соединение закрыто");
+            outPutData(dos, "Соединение закрыто");
+            
+
+        } catch (SQLException ex) {
+            Logger.getLogger(JServer.class.getName()).log(Level.SEVERE, null, ex);
+        }
+    }
+    
+    /**
+     * Выводит информацию в поток данных
+     * @param dos объект класса DataOutputStream, в который выводится информация
+     * @param line строка для вывода
+     */
+    private void outPutData(DataOutputStream dos, String line) {
+        try {
+            dos.writeUTF(line);
             dos.flush();// очищаем поток и выводим все данные
             System.out.println();
-
-        } catch (SQLException | IOException ex) {
+        } catch (IOException ex) {
             Logger.getLogger(JServer.class.getName()).log(Level.SEVERE, null, ex);
+        }
+    }
+    
+    /**
+     * Закрывает канал передачи данных
+     * @param dos объект класса DataOutputStream, в который выводится информация
+     * @param line  строка для вывода
+     */
+    private void quitSocket(DataOutputStream dos, String line) {
+        try {
+            // вывод информации в поток данных
+            outPutData(dos, line);
+            closeConnection(dos);
+            socket.close();
+            System.out.printf(CONN_MESSAGE, num);
+            System.out.println();
+        } catch (IOException ex) {
+            Logger.getLogger(JServer.class.getName()).log(Level.SEVERE, null, ex);
+        }
+    }
+    
+    /**
+     * Создаёт объектный поток и выводит в него данные, полученные в результате
+     * запроса к базе данных
+     * @param line строка-запрос на получение данных
+     */
+    private void outPutObjectData(String line) {
+        // какой запрос получаем
+        if(line.startsWith("select", 4)) {
+            ObjectOutputStream oos = null;
+            try {
+                // запрос на выборку данных
+                Runquery rq = new Runquery();
+                String sql = line.substring(4);
+                List<Object[]> queryEntities = rq.getQueryEntities(sql);
+                oos = new ObjectOutputStream(System.out);
+                oos.writeObject(queryEntities);
+            } catch (IOException ex) {
+                Logger.getLogger(JServer.class.getName()).log(Level.SEVERE, null, ex);
+            } finally {
+                try {
+                    oos.close();
+                } catch (IOException ex) {
+                    Logger.getLogger(JServer.class.getName()).log(Level.SEVERE, null, ex);
+                }
+            }
+        } else if(line.startsWith("update", 4)) {
+            // запрос на обновление данных
+        } else if(line.startsWith("insert", 4)) {
+            // запрос на вставку данных
+        } else if(line.startsWith("delete", 4)) {
+            // запрос на удаление данных
+        } else if(line.startsWith("proc", 4)) {
+            // вызов сохранённой процедуры
+        } else if(line.startsWith("view", 4)) {
+            // выхов сохранённого представления
+        } else {
+            
         }
     }
 }
